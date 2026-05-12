@@ -231,8 +231,8 @@ def get_config():
     # network parameters
     parser.add_argument(
         "--share_policy",
-        action="store_false",
-        default=False,
+        action="store_true",
+        default=True,
         help="Whether agent share the same policy",
     )
     parser.add_argument(
@@ -301,7 +301,7 @@ def get_config():
     )
     parser.add_argument(
         "--use_recurrent_policy",
-        action="store_false",
+        action="store_true",
         default=False,
         help="use a recurrent policy",
     )

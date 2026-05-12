@@ -273,7 +273,8 @@ class EnvRunner(Runner):
                         np.eye(self.eval_envs.action_space[agent_id].n)[eval_action], 1
                     )
                 else:
-                    raise NotImplementedError
+                    # Continuous (Box) / custom action space — pass through.
+                    eval_action_env = eval_action
 
                 eval_temp_actions_env.append(eval_action_env)
                 eval_rnn_states[:, agent_id] = _t2n(eval_rnn_state)
@@ -355,7 +356,8 @@ class EnvRunner(Runner):
                     elif self.envs.action_space[agent_id].__class__.__name__ == "Discrete":
                         action_env = np.squeeze(np.eye(self.envs.action_space[agent_id].n)[action], 1)
                     else:
-                        raise NotImplementedError
+                        # Continuous (Box) / custom action space — pass through.
+                        action_env = action
 
                     temp_actions_env.append(action_env)
                     rnn_states[:, agent_id] = _t2n(rnn_state)

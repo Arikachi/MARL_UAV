@@ -8,7 +8,7 @@
 import gym
 from gym import spaces
 import numpy as np
-from envs.env_core import EnvCore
+from envs.custom_env.env_core import EnvCore
 
 
 class DiscreteActionEnv(object):

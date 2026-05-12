@@ -254,7 +254,8 @@ class EnvRunner(Runner):
             elif self.eval_envs.action_space[0].__class__.__name__ == "Discrete":
                 eval_actions_env = np.squeeze(np.eye(self.eval_envs.action_space[0].n)[eval_actions], 2)
             else:
-                raise NotImplementedError
+                # Continuous (Box) / custom action space — mirror collect()'s fallback.
+                eval_actions_env = eval_actions
 
             # Obser reward and next obs
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)

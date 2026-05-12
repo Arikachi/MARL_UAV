@@ -8,6 +8,43 @@ def _t2n(x):
     """Convert torch tensor to a numpy array."""
     return x.detach().cpu().numpy()
 
+
+def _load_partial(module, state_dict, label):
+    """load_state_dict(strict=False) + verbose, human-readable report.
+
+    Reports three failure modes separately so the user can act on them:
+      - missing:    key exists in the new model but not in the checkpoint
+                    (the new layer keeps its random init)
+      - unexpected: key exists in the checkpoint but not in the new model
+                    (silently dropped)
+      - shape_mismatch: same key, different shape — these are NOT loaded
+                    by strict=False; we filter them out first and warn.
+    """
+    own_sd = module.state_dict()
+    filtered = {}
+    shape_mismatch = []
+    for k, v in state_dict.items():
+        if k in own_sd and own_sd[k].shape != v.shape:
+            shape_mismatch.append((k, tuple(v.shape), tuple(own_sd[k].shape)))
+        else:
+            filtered[k] = v
+    result = module.load_state_dict(filtered, strict=False)
+    missing = [k for k in result.missing_keys]
+    unexpected = [k for k in result.unexpected_keys]
+
+    if missing or unexpected or shape_mismatch:
+        print(f"[restore:{label}] partial load — checkpoint and current model differ:")
+        if shape_mismatch:
+            print(f"  ! shape mismatch (not loaded, kept random init):")
+            for k, ck_shape, mod_shape in shape_mismatch:
+                print(f"      {k}: ckpt {ck_shape} vs model {mod_shape}")
+        if missing:
+            print(f"  ? missing in checkpoint (kept random init): {missing}")
+        if unexpected:
+            print(f"  ? unexpected in checkpoint (ignored): {unexpected}")
+    else:
+        print(f"[restore:{label}] fully loaded")
+
 class Runner(object):
     """
     Base class for training recurrent policies.
@@ -20,8 +57,8 @@ class Runner(object):
         self.eval_envs = config['eval_envs']
         self.device = config['device']
         self.num_agents = config['num_agents']
-        if config.__contains__("render_envs"):
-            self.render_envs = config['render_envs']       
+        if "render_envs" in config:
+            self.render_envs = config['render_envs']
 
         # parameters
         self.env_name = self.all_args.env_name
@@ -50,12 +87,10 @@ class Runner(object):
 
         self.run_dir = config["run_dir"]
         self.log_dir = str(self.run_dir / 'logs')
-        if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
         self.writter = SummaryWriter(self.log_dir)
         self.save_dir = str(self.run_dir / 'models')
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
+        os.makedirs(self.save_dir, exist_ok=True)
 
         from algorithms.algorithm.r_mappo import RMAPPO as TrainAlgo
         from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy as Policy
@@ -126,12 +161,18 @@ class Runner(object):
         torch.save(policy_critic.state_dict(), str(self.save_dir) + "/critic.pt")
 
     def restore(self):
-        """Restore policy's networks from a saved model."""
-        policy_actor_state_dict = torch.load(str(self.model_dir) + '/actor.pt')
-        self.policy.actor.load_state_dict(policy_actor_state_dict)
+        """Restore policy's networks from a saved model.
+
+        Uses ``strict=False`` so a checkpoint trained on a different env
+        (different action space, MLP↔CNN base, recurrent/feed-forward,
+        PopArt on/off, etc.) can still load the layers that do match.
+        Mismatches are surfaced loudly so they don't pass silently.
+        """
+        actor_sd = torch.load(str(self.model_dir) + '/actor.pt', map_location=self.device)
+        _load_partial(self.policy.actor, actor_sd, label="actor")
         if not self.all_args.use_render:
-            policy_critic_state_dict = torch.load(str(self.model_dir) + '/critic.pt')
-            self.policy.critic.load_state_dict(policy_critic_state_dict)
+            critic_sd = torch.load(str(self.model_dir) + '/critic.pt', map_location=self.device)
+            _load_partial(self.policy.critic, critic_sd, label="critic")
  
     def log_train(self, train_infos, total_num_steps):
         """
