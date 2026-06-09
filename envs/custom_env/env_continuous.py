@@ -6,7 +6,6 @@ from envs.custom_env.env_core import EnvCore
 
 class ContinuousActionEnv(object):
     """
-    对于连续动作环境的封装
     Wrapper for continuous action environment.
     """
 

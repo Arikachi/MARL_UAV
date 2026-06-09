@@ -356,7 +356,7 @@ class UAVEnv:
         )
 
         fig.tight_layout(pad=0.5)
-
+        
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         buf = canvas.buffer_rgba()

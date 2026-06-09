@@ -13,7 +13,6 @@ from envs.custom_env.env_core import EnvCore
 
 class DiscreteActionEnv(object):
     """
-    对于离散动作环境的封装
     Wrapper for discrete action environment.
     """
 
