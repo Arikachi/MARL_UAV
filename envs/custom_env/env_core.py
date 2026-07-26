@@ -5,6 +5,10 @@ import numpy as np
 np.set_printoptions(suppress=True)
 from gymnasium import spaces
 
+import matplotlib.pyplot as plt
+import matplotlib.backends.backend_agg as agg
+import copy
+
 """
 # Understanding 
 # init = base infos
@@ -34,18 +38,20 @@ from gymnasium import spaces
 """
 
 class EnvCore:
-    def __init__(self, length=4 , radius=0.5, num_obstacle=3, num_agents=3):
+    def __init__(self, length=4 , radius=0.5, num_obstacle=0, num_agents=3, all_args=None):
         # environment
         self.length = length
         self.radius = radius
+        self.goal_radius = 0.8
         self.num_obstacle = num_obstacle
         self.time_step = 0.5
-        self.v_max = 0.08
-        self.a_max = 0.04
+        self.v_max = 0.12
+        self.a_max = 0.08
         self.obstacles = [Obstacle(length=length) for _ in range(self.num_obstacle)]
 
         # agents
         self.num_agents = num_agents  # n agents
+        self.agent_num = num_agents # for env_continuous
         self.obs_dim = 14  
         """
         1, 2: global velocity x, y
@@ -56,6 +62,7 @@ class EnvCore:
         """
         self.action_dim = 2 # v_x, v_y
         self.history_positions = [[] for _ in range(num_agents)]
+        self.rewards = np.zeros(num_agents)
 
         # target
         self.target_pos = np.zeros(2)
@@ -78,26 +85,33 @@ class EnvCore:
         # step counters
         self.success_streak = 0
         self.step_cnt = 0
-        self.MAX_STEPS = 100
+        if all_args and hasattr(all_args, "episode_length"):
+            self.MAX_STEPS = all_args.episode_length
+        else:
+            self.MAX_STEPS = 100
 
     def reset(self):
         """
         # When self.num_agents is set to 2 agents, the return value is a list, each list contains a shape = (self.obs_dim, ) observation data
         """
         self.step_cnt = 0
+        self.rewards = np.zeros(self.num_agents)
+
+        # Target
         self.current_target_radius = np.random.uniform(0.3, 0.8)
         self.target_direction = np.random.choice([-1, 1])
         self.target_anchor_x = np.random.uniform(1.5, 2.5)
         self.target_anchor_y = np.random.uniform(1.5, 2.5)
         self.target_pos = np.array([self.target_anchor_x + self.target_direction * self.current_target_radius, self.target_anchor_y])
-        self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents , self.radius)
+        self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents , self.goal_radius)
+        self.prev_target_goal = self.target_goal
         random.seed(random.randint(1, 1000))
         self.multi_current_pos = []
         self.multi_current_vel = []
         self.history_positions = [[] for _ in range(self.num_agents)]
 
         for i in range(self.num_agents):
-            self.multi_current_pos.append(np.random.uniform(low=0.1, high=0.4, size=(2,)))
+            self.multi_current_pos.append(np.random.uniform(low=0.1, high=2.5, size=(2,)))
             self.multi_current_vel.append(np.zeros(2))
         return self.get_multi_obs()
 
@@ -107,17 +121,27 @@ class EnvCore:
         # The default parameter situation is to input a list with two elements, because the action dimension is 5, so each element shape = (5, )
         """
         # target path
-        angular_speed = 0.05  # controls how fast it completes the circle
-        
+        angular_speed = 0.05 #TODO  # controls how fast it completes the circle
+
+        self.prev_target_goal = self.target_goal
         self.target_pos[0] = self.target_anchor_x + self.target_direction * self.current_target_radius * np.cos(angular_speed * self.step_cnt)
         self.target_pos[1] = self.target_anchor_y + self.target_direction * self.current_target_radius * np.sin(angular_speed * self.step_cnt)
-        self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents, self.radius)
+        self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents, self.goal_radius)
 
         # agents step
         for i in range(self.num_agents):
             pos = self.multi_current_pos[i]
-            self.multi_current_vel[i][0] += actions[i][0] * self.time_step
-            self.multi_current_vel[i][1] += actions[i][1] * self.time_step
+            acce = actions[i] * self.time_step
+            for j in [0, 1]:
+                if acce[j] >= self.a_max:
+                    acce[j] = self.a_max
+                elif acce[j] <= -self.a_max:
+                    acce[j] = -self.a_max
+            # Damping
+            self.multi_current_vel[i] *= 0.95
+            # Accelerate
+            self.multi_current_vel[i][0] += acce[0]
+            self.multi_current_vel[i][1] += acce[1]
             vel_magnitude = np.linalg.norm(self.multi_current_vel[i])
             if vel_magnitude >= self.v_max:
                 self.multi_current_vel[i] = self.multi_current_vel[i] / vel_magnitude * self.v_max
@@ -221,35 +245,54 @@ class EnvCore:
         rewards = np.zeros(self.num_agents)
 
         all_agents_in_formation = True
-        formation_tolerance = 0.10
+        formation_tolerance = 0.15 #TODO
 
-        mu1 = 1.0
+        mu1, mul2, mul3 = 1.2, 0.8, 1.0         # distance, collision, speed
 
         for i in range(self.num_agents):
             pos = self.multi_current_pos[i]
+            vel = self.multi_current_vel[i]
             goal = self.target_goal[i]
             dist_to_goal = np.linalg.norm(pos - goal)
-            rewards[i] -= dist_to_goal * mu1
+
+            goal_vel = (self.target_goal[i] - self.prev_target_goal[i]) / self.time_step
+            rel_speed = np.linalg.norm(vel - goal_vel)
 
             # distance reward
+            rewards[i] -= dist_to_goal * mu1
             if dist_to_goal > formation_tolerance:
                 all_agents_in_formation = False
 
             # collision reward
             if IsCollied[i]:
-                rewards[i] -= 10
+                rewards[i] -= 10 * mul2
+
+            # smooth control
+            if dist_to_goal < formation_tolerance:
+                rewards[i] += 3.0
+                rewards[i] -= rel_speed * mul3
+            else:
+                rewards[i] -= rel_speed * mul3 * 0.05
 
         # formation reward
         if all_agents_in_formation:
             self.success_streak += 1
         else:
             self.success_streak = 0
-            
-        if self.success_streak >= 6:
-            dones = [True] * self.num_agents
+
+        if self.success_streak >= 3 and self.success_streak < 6:
+            for i in range(self.num_agents):
+                rewards[i] += 5.0
+        elif self.success_streak >= 6:
+            for i in range(self.num_agents):
+                rewards[i] += 10.0
+
+        if self.success_streak >= 15:
             for i in range(self.num_agents):
                 rewards[i] += 50.0
+            dones = [True] * self.num_agents
 
+        self.rewards = rewards
         return rewards, dones
     
     def isCollied_wrapper(self):
@@ -285,17 +328,158 @@ class EnvCore:
                         push_direction_other = (pos - pos_other) / (dist_other + 1e-6)
                         self.multi_current_pos[i] = pos_other + push_direction_other * agent_buffer
 
-
             if done:
                 self.multi_current_vel[i] = np.zeros(2)
             dones.append(done)
         return dones
 
     # Render
-    _HUNTER_COLORS = ("#1f77b4", "#2ca02c", "#9467bd")
-    _TARGET_COLOR = "#d62728"
-    _BG_COLOR = "#f7f7f9"
-    _OBSTACLE_COLOR = "#5a5f66"
+    BG_COLOR = "#f7f7f9"
+    OBSTACLE_COLOR = "#5a5f66"
+    GOAL_COLOR = "#d62728"
+    AGENT_COLORS = ("#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#e377c2")
+
+    def render(self, mode="human"):
+        if not hasattr(self, "history_positions"):
+            self.history_positions = [[] for _ in range(self.num_agents)]
+
+        fig = plt.gcf()
+        fig.set_size_inches(6, 6)
+        fig.set_facecolor(self.BG_COLOR)
+        plt.clf()
+        
+        ax = plt.gca()
+        ax.set_facecolor(self.BG_COLOR)
+        ax.set_aspect("equal", adjustable="box")
+        
+        # Self.length dictates the arena grid size boundary dynamically
+        ax.set_xlim(-0.1, self.length + 0.1)
+        ax.set_ylim(-0.1, self.length + 0.1)
+        
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+        # Draw subtle arena boundaries
+        ax.add_patch(plt.Rectangle(
+            (0, 0), self.length, self.length,
+            fill=False, edgecolor="#cdd0d4", linewidth=0.7,
+            linestyle=(0, (3, 3)),
+        ))
+
+        # 1. Draw Static/Dynamic Obstacles (Assuming self.obstacles contains obstacle instances)
+        if hasattr(self, "obstacles"):
+            for obstacle in self.obstacles:
+                ax.add_patch(plt.Circle(
+                    obstacle.position, obstacle.radius,
+                    facecolor=self.OBSTACLE_COLOR, edgecolor="#2c3036",
+                    alpha=0.55, linewidth=1.0, zorder=2,
+                ))
+
+        # 2. Draw Target Formations / Target Slots (self.target_goal)
+        if hasattr(self, "target_goal"):
+            if hasattr(self, "target_pos"):
+                ax.scatter(
+                    self.target_pos[0], self.target_pos[1], c="gold",
+                    marker="X", s=250, edgecolors="black", linewidths=1.5,
+                    zorder=5, alpha=0.9, label="Main Target"
+                )
+
+            for i in range(self.num_agents):
+                goal_pos = self.target_goal[i]
+                ax.scatter(
+                    goal_pos[0], goal_pos[1], c=self.GOAL_COLOR,
+                    marker="*", s=160, edgecolors="white", linewidths=1.0,
+                    zorder=4, alpha=0.7, label="Slot Target" if i == 0 else ""
+                )
+
+        # 3. Draw Agents and their Fading Trajectories
+        for i in range(self.num_agents):
+            color = self.AGENT_COLORS[i % len(self.AGENT_COLORS)]
+            pos = copy.deepcopy(self.multi_current_pos[i])
+            vel = self.multi_current_vel[i]
+            
+            # Save position history for trails
+            self.history_positions[i].append(pos)
+            trajectory = np.array(self.history_positions[i])
+
+            # Draw fading line trajectories
+            if len(trajectory) >= 2:
+                segs = np.stack([trajectory[:-1], trajectory[1:]], axis=1)
+                n_segs = len(segs)
+                for k, seg in enumerate(segs):
+                    alpha = 0.15 + 0.6 * (k / max(n_segs - 1, 1))
+                    ax.plot(seg[:, 0], seg[:, 1], color=color, alpha=alpha, linewidth=1.8, zorder=3)
+
+            # 3.5 DRAW LINE TO AGENT'S OWN GOAL SLOT
+            if hasattr(self, "target_goal"):
+                goal_pos = self.target_goal[i]
+                ax.plot(
+                    [pos[0], goal_pos[0]], [pos[1], goal_pos[1]],
+                    color=color, linestyle=":", linewidth=1.2, alpha=0.45,
+                    zorder=2, label="To Target" if i == 0 else ""
+                )
+
+            # Draw Agent Node
+            ax.scatter(pos[0], pos[1], c=color, s=140, edgecolors="white",
+                       linewidths=1.5, zorder=5, label=f"Agent {i}")
+            
+            # Draw Velocity Vectors 
+            speed = np.linalg.norm(vel)
+            if speed > 1e-3:
+                angle = np.arctan2(vel[1], vel[0])
+                arrow_len = 0.08
+                ax.annotate(
+                    "", xy=(pos[0] + arrow_len * np.cos(angle), pos[1] + arrow_len * np.sin(angle)),
+                    xytext=(pos[0], pos[1]),
+                    arrowprops=dict(arrowstyle="->", color=color, lw=1.8, shrinkA=4, shrinkB=0),
+                    zorder=6,
+                )
+
+        # 4. Display Step Counter (Assumes self.step_cnt exists, otherwise defaults to 0)
+        step_val = getattr(self, "step_cnt", 0)
+        max_steps_val = getattr(self, "MAX_STEPS", 100)
+        streak_val = getattr(self, "success_streak", 0)
+        rewards_list = getattr(self, "rewards", [0.0] * self.num_agents)
+
+        display_text = f"step {step_val:3d}/{max_steps_val}\nstreak: {streak_val}"
+
+        for idx in range(self.num_agents):
+            rew = rewards_list[idx]
+            display_text += f"\nAgent {idx} Rew: {rew:.2f}"
+
+        ax.text(
+            0.02, 0.98, display_text,
+            transform=ax.transAxes, ha="left", va="top",
+            fontsize=9, color="#2c3036",
+            bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                      edgecolor="#d0d3d8", alpha=0.85),
+        )
+
+        # Layout Arrangement and Legends Placement
+        ax.legend(
+            loc="lower center", bbox_to_anchor=(0.5, 1.01),
+            ncol=4, frameon=False, fontsize=9,
+            handletextpad=0.4, columnspacing=1.0,
+        )
+
+        fig.tight_layout(pad=0.5)
+        
+        # Render out to numpy RGB array for compatibility with env_runner.py
+        canvas = agg.FigureCanvasAgg(fig)
+        canvas.draw()
+        buf = canvas.buffer_rgba()
+        
+        if mode == "rgb_array":
+            return np.asarray(buf)
+        else:
+            plt.pause(0.001)
+            return np.asarray(buf)
+
+    def close(self):
+        """Cleanup window objects."""
+        import matplotlib.pyplot as plt
+        plt.close()
 
     # Helper
     def generate_surround_positions(self, target_pos, num_agents, radius):
@@ -318,42 +502,3 @@ class Obstacle:
         speed = 0.0
         self.velocity = np.array([speed * np.cos(angle), speed * np.sin(angle)])
         self.radius = np.random.uniform(0.1, 0.15)
-
-# ==========================================
-# TEST EXECUTION BLOCK (Runs only when executed directly)
-# ==========================================
-# if __name__ == "__main__":
-#     # 1. Instantiate your custom environment
-#     env = EnvCore()
-    
-#     print("--- Testing Reset ---")
-#     # 2. Run reset to initialize your variables
-#     initial_obs = env.reset()
-    
-#     # 3. Print your target position to verify it generated correctly
-#     print(f"Target Position after reset: {env.target_pos}")
-#     print(f"Target Goals after reset: {env.target_goal}")
-#     print(f"Agent 0 Position after reset: {env.multi_current_pos[0]}")
-    
-#     print("\n--- Testing One Frame Step ---")
-#     # 4. Create a dummy actions dictionary matching what MAPPO would send
-#     # Agent 0, 1, and 2 trying to move with velocity [0.05, -0.02]
-#     mock_actions = [
-#         np.array([0.05, -0.02]),  # Agent 0
-#         np.array([0.01, 0.04]),   # Agent 1
-#         np.array([-0.03, 0.01]),  # Agent 2
-#     ]
-    
-#     # 5. Run a single step to see if your designed pattern updates the target
-#     obs, rewards, dones, infos = env.step(mock_actions)
-
-#     # 6. Print the target position again to see if it moved!
-#     print(f"Target Position after 1 step: {env.target_pos}")
-#     print(f"Step Counter is now: {env.step_cnt}")
-
-#     # 5. Run a single step to see if your designed pattern updates the target
-#     obs, rewards, dones, infos = env.step(mock_actions)
-
-#     # 6. Print the target position again to see if it moved!
-#     print(f"Target Position after 1 step: {env.target_pos}")
-#     print(f"Step Counter is now: {env.step_cnt}")

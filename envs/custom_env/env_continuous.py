@@ -9,8 +9,8 @@ class ContinuousActionEnv(object):
     Wrapper for continuous action environment.
     """
 
-    def __init__(self):
-        self.env = EnvCore()
+    def __init__(self, all_args=None):
+        self.env = EnvCore(all_args=all_args)
         self.num_agent = self.env.agent_num
 
         self.signal_obs_dim = self.env.obs_dim
@@ -63,10 +63,6 @@ class ContinuousActionEnv(object):
 
     def step(self, actions):
         """
-        输入actions维度假设：
-        # actions shape = (5, 2, 5)
-        # 5个线程的环境，里面有2个智能体，每个智能体的动作是一个one_hot的5维编码
-
         Input actions dimension assumption:
         # actions shape = (5, 2, 5)
         # 5 threads of environment, there are 2 agents inside, and each agent's action is a 5-dimensional one_hot encoding
@@ -84,7 +80,7 @@ class ContinuousActionEnv(object):
         pass
 
     def render(self, mode="rgb_array"):
-        pass
+        return self.env.render(mode=mode)
 
     def seed(self, seed):
         pass

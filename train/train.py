@@ -33,11 +33,10 @@ def _build_single_env(all_args):
         from envs.uav.uav_roundup_env import UAVRoundupEnv
 
         return UAVRoundupEnv(max_steps=all_args.episode_length)
-    # TODO 选择连续/离散动作空间，注释/启用对应两行即可。
     # TODO Switch between continuous/discrete action spaces by toggling the two lines.
     from envs.custom_env.env_continuous import ContinuousActionEnv
 
-    return ContinuousActionEnv()
+    return ContinuousActionEnv(all_args=all_args)
     # from envs.custom_env.env_discrete import DiscreteActionEnv
     # return DiscreteActionEnv()
 
@@ -138,7 +137,10 @@ def main(args):
         from runner.separated.env_runner import EnvRunner as Runner
 
     runner = Runner(config)
-    runner.run()
+    if all_args.use_render:
+        runner.render()
+    else:
+        runner.run()
 
     # post process
     envs.close()

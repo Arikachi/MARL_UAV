@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from runner.shared.base_runner import Runner
 
-# import imageio
+import imageio
 
 
 def _t2n(x):
@@ -284,7 +284,7 @@ class EnvRunner(Runner):
         for episode in range(self.all_args.render_episodes):
             obs = envs.reset()
             if self.all_args.save_gifs:
-                image = envs.render("rgb_array")[0][0]
+                image = envs.render("rgb_array")[0]
                 all_frames.append(image)
             else:
                 envs.render("human")
@@ -325,7 +325,7 @@ class EnvRunner(Runner):
                 elif envs.action_space[0].__class__.__name__ == "Discrete":
                     actions_env = np.squeeze(np.eye(envs.action_space[0].n)[actions], 2)
                 else:
-                    raise NotImplementedError
+                    actions_env = actions
 
                 # Obser reward and next obs
                 obs, rewards, dones, infos = envs.step(actions_env)
@@ -339,7 +339,7 @@ class EnvRunner(Runner):
                 masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
 
                 if self.all_args.save_gifs:
-                    image = envs.render("rgb_array")[0][0]
+                    image = envs.render("rgb_array")[0]
                     all_frames.append(image)
                     calc_end = time.time()
                     elapsed = calc_end - calc_start
@@ -350,5 +350,15 @@ class EnvRunner(Runner):
 
             print("average episode rewards is: " + str(np.mean(np.sum(np.array(episode_rewards), axis=0))))
 
-        # if self.all_args.save_gifs:
-        #     imageio.mimsave(str(self.gif_dir) + '/render.gif', all_frames, duration=self.all_args.ifi)
+        if self.all_args.save_gifs:
+            # Dynamically declare the path if the parent initializer skipped it
+            if not hasattr(self, 'gif_dir'):
+                from pathlib import Path
+                self.gif_dir = Path(self.all_args.model_dir) / "gifs"
+            
+            # Ensure the directory actually exists on your drive
+            self.gif_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_path = str(self.gif_dir / 'render.gif')
+            imageio.mimsave(output_path, all_frames, duration=self.all_args.ifi)
+            print(f"Successfully saved compiled animation to: {output_path}")
