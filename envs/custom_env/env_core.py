@@ -38,7 +38,7 @@ import copy
 """
 
 class EnvCore:
-    def __init__(self, length=4 , radius=0.5, num_obstacle=0, num_agents=3, all_args=None):
+    def __init__(self, length=4 , radius=0.5, num_obstacle=3, num_agents=3, all_args=None):
         # environment
         self.length = length
         self.radius = radius
@@ -52,13 +52,14 @@ class EnvCore:
         # agents
         self.num_agents = num_agents  # n agents
         self.agent_num = num_agents # for env_continuous
-        self.obs_dim = 14  
+        self.obs_dim = 16
         """
         1, 2: global velocity x, y
         3, 4: relative goal position
         5, 6: relative target position
         7, 8, 9, 10: relative position of the closest 2 other agents
         11, 12, 13, 14: relative position of the closest 2 obstacle
+        15, 16: target velocity (new_pos - old_pos / time)
         """
         self.action_dim = 2 # v_x, v_y
         self.history_positions = [[] for _ in range(num_agents)]
@@ -77,9 +78,9 @@ class EnvCore:
             "agent_2": spaces.Box(low=-np.inf, high=np.inf, shape=(2,)),
         }
         self.observation_space = {
-            "agent_0": spaces.Box(low=-np.inf, high=np.inf, shape=(14,)),
-            "agent_1": spaces.Box(low=-np.inf, high=np.inf, shape=(14,)),
-            "agent_2": spaces.Box(low=-np.inf, high=np.inf, shape=(14,)),
+            "agent_0": spaces.Box(low=-np.inf, high=np.inf, shape=(16,)),
+            "agent_1": spaces.Box(low=-np.inf, high=np.inf, shape=(16,)),
+            "agent_2": spaces.Box(low=-np.inf, high=np.inf, shape=(16,)),
         }
 
         # step counters
@@ -98,13 +99,32 @@ class EnvCore:
         self.rewards = np.zeros(self.num_agents)
 
         # Target
-        self.current_target_radius = np.random.uniform(0.3, 0.8)
-        self.target_direction = np.random.choice([-1, 1])
-        self.target_anchor_x = np.random.uniform(1.5, 2.5)
-        self.target_anchor_y = np.random.uniform(1.5, 2.5)
-        self.target_pos = np.array([self.target_anchor_x + self.target_direction * self.current_target_radius, self.target_anchor_y])
+        # Circular walk
+        # self.current_target_radius = np.random.uniform(0.3, 0.8)
+        # self.target_direction = np.random.choice([-1, 1])
+        # self.target_anchor_x = np.random.uniform(1.5, 2.5)
+        # self.target_anchor_y = np.random.uniform(1.5, 2.5)
+        # self.target_pos = np.array([self.target_anchor_x + self.target_direction * self.current_target_radius, self.target_anchor_y])
+        # self.target_vel = np.zeros(2)
+
+        # Random walk
+        angle = np.random.uniform(0, 2*np.pi)
+        speed = np.random.uniform(0.04, 0.08)
+        self.target_vel = np.array([speed*np.cos(angle), speed*np.sin(angle)])
+        self.target_segment = np.random.uniform(0.6, 1.0)
+        self.segment_check = 0.0
+
+        self.target_pos = np.zeros(2)
+        self.target_pos[0] = np.random.uniform(1.5, 2.5)
+        self.target_pos[1] = np.random.uniform(1.5, 2.5)
+
+        self.prev_target = self.target_pos.copy()
+
+        # Goal
         self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents , self.goal_radius)
-        self.prev_target_goal = self.target_goal
+        self.prev_target_goal = self.target_goal.copy()
+
+        # Agents
         random.seed(random.randint(1, 1000))
         self.multi_current_pos = []
         self.multi_current_vel = []
@@ -120,25 +140,58 @@ class EnvCore:
         # When self.num_agents is set to 2 agents, the input of actions is a 2-dimensional list, each list contains a shape = (self.action_dim, ) action data
         # The default parameter situation is to input a list with two elements, because the action dimension is 5, so each element shape = (5, )
         """
-        # target path
-        angular_speed = 0.05 #TODO  # controls how fast it completes the circle
+        # # Target circular walk
+        # # target path
+        # angular_speed = 0.05 # controls how fast it completes the circle
 
-        self.prev_target_goal = self.target_goal
-        self.target_pos[0] = self.target_anchor_x + self.target_direction * self.current_target_radius * np.cos(angular_speed * self.step_cnt)
-        self.target_pos[1] = self.target_anchor_y + self.target_direction * self.current_target_radius * np.sin(angular_speed * self.step_cnt)
+        # # Update target pos
+        # self.prev_target = self.target_pos.copy()
+        # self.target_pos[0] = self.target_anchor_x + self.target_direction * self.current_target_radius * np.cos(angular_speed * self.step_cnt)
+        # self.target_pos[1] = self.target_anchor_y + self.target_direction * self.current_target_radius * np.sin(angular_speed * self.step_cnt)
+
+        # # Update goal
+        # self.prev_target_goal = self.target_goal.copy()
+        # self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents, self.goal_radius)
+
+        # # Update target vel
+        # self.target_vel[0] = (self.target_pos[0] - self.prev_target[0]) / self.time_step
+        # self.target_vel[1] = (self.target_pos[1] - self.prev_target[1]) / self.time_step
+
+        # target random walk
+        if self.segment_check < self.target_segment:
+            self.segment_check = self.segment_check +  np.linalg.norm(self.target_vel) * self.time_step
+        else:
+            angle = np.random.uniform(0, 2*np.pi)
+            speed = np.random.uniform(0.04, 0.08)
+            self.target_vel[0] = speed * np.cos(angle)
+            self.target_vel[1] = speed * np.sin(angle)
+            self.segment_check = 0.0
+
+        self.prev_target = self.target_pos.copy()
+        self.target_pos[0] = self.target_pos[0] + self.target_vel[0]*self.time_step
+        self.target_pos[1] = self.target_pos[1] + self.target_vel[1]*self.time_step
+
+        # Bounce off arena walls
+        for dim in (0, 1):
+            if self.target_pos[dim] < 1.5:
+                self.target_pos[dim] = 1.5
+                self.target_vel[dim] *= -1
+            elif self.target_pos[dim] > self.length-1.5:
+                self.target_pos[dim] = self.length-1.5
+                self.target_vel[dim] *= -1
+
+        self.prev_target_goal = self.target_goal.copy()
         self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents, self.goal_radius)
 
         # agents step
+        clipped_acce = [] # acce for reward function
         for i in range(self.num_agents):
             pos = self.multi_current_pos[i]
             acce = actions[i] * self.time_step
-            for j in [0, 1]:
-                if acce[j] >= self.a_max:
-                    acce[j] = self.a_max
-                elif acce[j] <= -self.a_max:
-                    acce[j] = -self.a_max
+            clipped_acce.append(acce)
+
             # Damping
-            self.multi_current_vel[i] *= 0.95
+            self.multi_current_vel[i] *= 0.90
             # Accelerate
             self.multi_current_vel[i][0] += acce[0]
             self.multi_current_vel[i][1] += acce[1]
@@ -164,7 +217,7 @@ class EnvCore:
 
         # return values
         multi_next_obs = self.get_multi_obs()
-        rewards, dones = self.cal_rewards_done(is_collided)
+        rewards, dones = self.cal_rewards_done(is_collided, clipped_acce)
         infos = {agent: {} for agent in self.agents}
 
         if self.step_cnt >= self.MAX_STEPS:
@@ -191,6 +244,9 @@ class EnvCore:
             # target relative
             rel_target = self.target_pos - pos
             S_target = [rel_target[0] / self.length, rel_target[1] / self.length]
+
+            # target velocity
+            S_target_vel = [self.target_vel[0] / self.v_max, self.target_vel[1] / self.v_max]
 
             # nearby agents
             nearby_agent = []
@@ -234,45 +290,56 @@ class EnvCore:
                 nearby_obstacle_coord[t] = nearby_obstacle[t]["coord"]
             S_nearby_obstacle = [coord for pair in nearby_obstacle_coord for coord in pair]
 
-            single_obs = [S_vel, S_goal, S_target, S_nearby_agent, S_nearby_obstacle]
+            single_obs = [S_vel, S_goal, S_target, S_target_vel, S_nearby_agent, S_nearby_obstacle]
             flat_obs = list(itertools.chain(*single_obs))
             
             total_obs.append(flat_obs)
         return total_obs
     
-    def cal_rewards_done(self, IsCollied):
+    def cal_rewards_done(self, IsCollied, clipped_acce):
         dones = [False] * self.num_agents
         rewards = np.zeros(self.num_agents)
 
         all_agents_in_formation = True
-        formation_tolerance = 0.15 #TODO
+        formation_tolerance = 0.12 #TODO
 
-        mu1, mul2, mul3 = 1.2, 0.8, 1.0         # distance, collision, speed
+        mul1, mul1_2, mul2 = 1.5, 3.2, 1.0        # distance, distant_plus, collision
+        mul3_base, mul3_2_base = 10.0, 5.0         # velocity, acceleration — near goal
+        mul3_far, mul3_2_far = 5.0, 2.0            # velocity, acceleration — far from goal
 
         for i in range(self.num_agents):
             pos = self.multi_current_pos[i]
             vel = self.multi_current_vel[i]
             goal = self.target_goal[i]
             dist_to_goal = np.linalg.norm(pos - goal)
+            proximity_weight = np.exp(-dist_to_goal / 0.15)
 
+            # relative velocity calculation
             goal_vel = (self.target_goal[i] - self.prev_target_goal[i]) / self.time_step
             rel_speed = np.linalg.norm(vel - goal_vel)
 
+            # relative acce calculation
+            acce_magnitude = np.linalg.norm(clipped_acce[i])
+
             # distance reward
-            rewards[i] -= dist_to_goal * mu1
+            rewards[i] -= dist_to_goal * mul1
             if dist_to_goal > formation_tolerance:
                 all_agents_in_formation = False
+
+            if dist_to_goal > formation_tolerance * 2:
+                mul3_i, mul3_2_i = mul3_far, mul3_2_far
+            else:
+                mul3_i, mul3_2_i = mul3_base, mul3_2_base
+
+            rewards[i] += mul1_2 * proximity_weight
 
             # collision reward
             if IsCollied[i]:
                 rewards[i] -= 10 * mul2
 
             # smooth control
-            if dist_to_goal < formation_tolerance:
-                rewards[i] += 3.0
-                rewards[i] -= rel_speed * mul3
-            else:
-                rewards[i] -= rel_speed * mul3 * 0.05
+            rewards[i] -= rel_speed * mul3_i * proximity_weight
+            rewards[i] -= acce_magnitude * mul3_2_i * proximity_weight
 
         # formation reward
         if all_agents_in_formation:
@@ -280,16 +347,9 @@ class EnvCore:
         else:
             self.success_streak = 0
 
-        if self.success_streak >= 3 and self.success_streak < 6:
-            for i in range(self.num_agents):
-                rewards[i] += 5.0
-        elif self.success_streak >= 6:
-            for i in range(self.num_agents):
-                rewards[i] += 10.0
-
         if self.success_streak >= 15:
             for i in range(self.num_agents):
-                rewards[i] += 50.0
+                rewards[i] += 300.0
             dones = [True] * self.num_agents
 
         self.rewards = rewards
