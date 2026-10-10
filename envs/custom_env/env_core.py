@@ -181,7 +181,24 @@ class EnvCore:
                 self.target_vel[dim] *= -1
 
         self.prev_target_goal = self.target_goal.copy()
-        self.target_goal = self.generate_surround_positions(self.target_pos, self.num_agents, self.goal_radius)
+        candidate_goals = self.generate_surround_positions(self.target_pos, self.num_agents, self.goal_radius)
+
+        # greedy
+        remaining = list(range(self.num_agents))
+        self.target_goal = [None] * self.num_agents
+
+        for _ in range(self.num_agents):
+            best_i, best_j, best_d = None, None, np.inf
+            for i in remaining:
+                for j in range(len(candidate_goals)):
+                    if candidate_goals[j] is None:
+                        continue
+                    d = np.linalg.norm(self.multi_current_pos[i] - candidate_goals[j])
+                    if d < best_d:
+                        best_i, best_j, best_d = i, j, d
+            self.target_goal[best_i] = candidate_goals[best_j]
+            candidate_goals[best_j] = None
+            remaining.remove(best_i)
 
         # agents step
         clipped_acce = [] # acce for reward function
